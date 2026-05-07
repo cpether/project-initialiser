@@ -12,6 +12,7 @@ const picker = require(path.join(libDir, 'picker'));
 const wizard = require(path.join(libDir, 'wizard'));
 const mcpAdd = require(path.join(libDir, 'mcp-add'));
 const scopeMove = require(path.join(libDir, 'scope-move'));
+const migrate = require(path.join(libDir, 'migrate'));
 const secretsResolve = require(path.join(libDir, 'secrets-resolve'));
 const backends = {
   keychain: require(path.join(libDir, 'backends', 'keychain')),
@@ -28,6 +29,7 @@ function die(msg, code = 1) {
 function bold(s) { return `\x1b[1m${s}\x1b[22m`; }
 function dim(s) { return `\x1b[2m${s}\x1b[22m`; }
 function green(s) { return `\x1b[32m${s}\x1b[39m`; }
+function yellow(s) { return `\x1b[33m${s}\x1b[39m`; }
 
 function parseArgs(argv) {
   const args = { _: [], flags: {} };
@@ -79,6 +81,7 @@ async function cmdMcp(args) {
   const sub = args._[1];
   if (sub === 'add') return mcpAdd.runAdd(ctx());
   if (sub === 'move') return cmdMcpMove(args);
+  if (sub === 'remap') return cmdMcpRemap(args);
   if (sub === 'enable' || sub === 'disable') {
     const name = args._[2];
     if (!name) die(`usage: claude-init mcp ${sub} <name>`);
@@ -92,7 +95,87 @@ async function cmdMcp(args) {
     console.log(green(`mcp ${name}: ${sub}d for this repo`));
     return;
   }
-  die('usage: claude-init mcp <add|move|enable|disable> [args]');
+  die('usage: claude-init mcp <add|move|remap|enable|disable> [args]');
+}
+
+async function cmdMcpRemap(args) {
+  const { root } = ctx();
+  let name = args._[2];
+  if (!name) {
+    const all = scopeMove.listAllByScope(root);
+    if (all.length === 0) die('no MCPs found in any scope');
+    const picked = await picker.select({
+      message: 'Which MCP to remap?',
+      choices: all.map((e) => ({ name: `${e.name}  ${dim('[' + e.scope + ']')}`, value: `${e.scope}|${e.name}` })),
+    });
+    name = picked.split('|')[1];
+  }
+
+  const located = scopeMove.locateEntry(root, name);
+  if (!located) die(`MCP "${name}" not found in any scope for ${root}`);
+  if (!migrate.isClaudeInitWrapped(located.cfg)) {
+    die(`"${name}" is not wrapped via claude-init exec — nothing to remap. Migrate it first via \`claude-init init\`.`);
+  }
+
+  const tokens = migrate.readWrappedTokens(located.cfg);
+  console.log(bold(`\nCurrent secrets for ${name}:`));
+  for (const t of tokens) {
+    const arrow = t.envKey === t.secretName ? '' : `${dim(' →')} ${t.secretName}`;
+    console.log(`  env ${t.envKey}${arrow}`);
+  }
+
+  const envKey = await picker.select({
+    message: '\nWhich env key to remap?',
+    choices: tokens.map((t) => ({
+      name: `${t.envKey}  ${dim('(currently → ' + t.secretName + ')')}`,
+      value: t.envKey,
+    })),
+  });
+  const current = tokens.find((t) => t.envKey === envKey);
+
+  const newSecretName = await picker.input({
+    message: `New secret name for ${envKey} (currently → ${current.secretName}):`,
+    validate: (v) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(v) ? true : 'use letters, digits, underscores',
+  });
+
+  // Apply the new mapping to .mcp.json (or wherever it lives)
+  const newMappings = tokens.map((t) =>
+    t.envKey === envKey ? { envKey, secretName: newSecretName } : t,
+  );
+  const newCfg = migrate.rewriteWrappedTokens(located.cfg, newMappings);
+  scopeMove.writeToScope(root, located.scope, name, newCfg);
+  console.log(green(`\nupdated ${name}: ${envKey} → ${newSecretName}`));
+
+  // Check whether the new secret is configured anywhere
+  const exists = secretsResolve.resolve(root, newSecretName);
+  if (exists) {
+    console.log(dim(`secret '${newSecretName}' already configured at ${exists.scope} scope — using existing value.`));
+    return;
+  }
+
+  console.log(yellow(`\nsecret '${newSecretName}' is not configured yet.`));
+  const configNow = await picker.confirm({
+    message: `Configure '${newSecretName}' now?`,
+    default: true,
+  }).catch(() => false);
+  if (!configNow) {
+    console.log(dim(`run when ready:  claude-init secret set ${newSecretName} [--scope user|project]`));
+    return;
+  }
+
+  const projData = manifest.read(root) || { version: 1, mcps: [], skills: [], secrets: {} };
+  const result = await wizard.configureSecret(newSecretName, root, projData);
+  if (result && result.storedAs && result.storedAs !== newSecretName) {
+    // configureSecret renamed again — retarget the .mcp.json mapping
+    const finalName = result.storedAs;
+    const finalMappings = newMappings.map((t) =>
+      t.envKey === envKey ? { envKey, secretName: finalName } : t,
+    );
+    const finalCfg = migrate.rewriteWrappedTokens(located.cfg, finalMappings);
+    scopeMove.writeToScope(root, located.scope, name, finalCfg);
+    console.log(dim(`adjusted mapping after rename: ${envKey} → ${finalName}`));
+  }
+  manifest.write(root, projData);
 }
 
 const SCOPE_LABELS = {
@@ -128,6 +211,24 @@ async function cmdMcpMove(args) {
       message: `Move "${name}" from ${bold(located.scope)} to:`,
       choices: others.map((s) => ({ name: SCOPE_LABELS[s], value: s })),
     });
+  }
+
+  // Pre-check target for collisions before calling move()
+  const existingAtTarget = scopeMove.entryAtScope(root, to, name);
+  if (existingAtTarget) {
+    const adjustedSource = scopeMove.adjustWrapperPath(located.cfg, to);
+    if (migrate.equivalent(adjustedSource, existingAtTarget)) {
+      console.log(dim(`\n"${name}" already exists at ${to} scope with an equivalent definition.`));
+      const ok = await picker.confirm({
+        message: `Drop the ${located.scope}-scope copy and keep the ${to}-scope one?`,
+        default: true,
+      });
+      if (!ok) { console.log(dim('No changes.')); return; }
+      scopeMove.removeFromScope(root, located.scope, name);
+      console.log(green(`removed ${located.scope}-scope ${name}; kept the equivalent ${to} version`));
+      return;
+    }
+    die(`${to} scope already has "${name}" with a different definition. Inspect with \`claude-init discover\` and resolve manually.`);
   }
 
   try {
@@ -245,17 +346,26 @@ async function cmdSecret(args) {
 
 async function cmdExec() {
   const dashIdx = process.argv.indexOf('--');
-  if (dashIdx < 0) die('usage: claude-init exec <NAME>... -- <command> [args...]');
-  const names = process.argv.slice(3, dashIdx);
+  if (dashIdx < 0) die('usage: claude-init exec [ENV_KEY=]<NAME>... -- <command> [args...]');
+  const tokens = process.argv.slice(3, dashIdx);
   const cmd = process.argv.slice(dashIdx + 1);
   if (cmd.length === 0) die('no command after --');
   const { root } = ctx();
   const env = { ...process.env };
-  for (const name of names) {
-    const r = secretsResolve.resolve(root, name);
-    if (!r) die(`secret ${name} not found (project or user). Run: claude-init secret set ${name}`);
-    try { env[name] = backends[r.ref.backend].get({ ref: r.ref }); }
-    catch (err) { die(`failed to read ${name}: ${err.message}`); }
+  for (const tok of tokens) {
+    let envKey, secretName;
+    if (tok.includes('=')) {
+      const eq = tok.indexOf('=');
+      envKey = tok.slice(0, eq);
+      secretName = tok.slice(eq + 1);
+    } else {
+      envKey = tok;
+      secretName = tok;
+    }
+    const r = secretsResolve.resolve(root, secretName);
+    if (!r) die(`secret ${secretName} not found (project or user). Run: claude-init secret set ${secretName}`);
+    try { env[envKey] = backends[r.ref.backend].get({ ref: r.ref }); }
+    catch (err) { die(`failed to read ${secretName}: ${err.message}`); }
   }
   const r = spawnSync(cmd[0], cmd.slice(1), { stdio: 'inherit', env });
   process.exit(r.status ?? 1);
@@ -269,6 +379,7 @@ Usage:
   claude-init check                                 first-run gate (use in 'cc' wrapper)
   claude-init mcp add                               interactively add a new MCP server
   claude-init mcp move [<name>] [--to user|project|local]   change an MCP's scope
+  claude-init mcp remap [<name>]                    point an env key at a different secret name
   claude-init mcp enable <name>                     enable an MCP in this repo
   claude-init mcp disable <name>                    disable an MCP in this repo
   claude-init plugin enable <id@market>             force-enable a plugin in this repo
