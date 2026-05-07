@@ -13,7 +13,7 @@ Determine the repo root with `git rev-parse --show-toplevel`. Read these files (
 - `.mcp.json` — generated MCP config
 - `.claude/settings.json` — `enabledMcpjsonServers` and `skillOverrides`
 
-If the manifest is missing, tell the user the repo isn't initialised and suggest `/init-repo`.
+If the manifest is missing, tell the user the repo isn't initialised and suggest `/project-initialiser:init-repo`.
 
 ## 2. Show current state
 
@@ -28,10 +28,10 @@ Use `AskUserQuestion` with these options:
 - **Add or remove MCPs** — re-pick from discovered list
 - **Add or remove skills** — re-pick from discovered list
 - **Rotate or change a secret** — pick which secret, then re-run set
-- **Reset everything** — delete manifest + generated files, suggest `/init-repo`
+- **Reset everything** — delete manifest + generated files, suggest `/project-initialiser:init-repo`
 
-For add/remove MCPs or skills: discover via `claude-secrets discover`, show current selections as defaults, ask multi-select, then regenerate `.mcp.json` and `.claude/settings.json` exactly as `/init-repo` step 6-7 describes.
+For add/remove MCPs or skills: discover via `claude-secrets discover`, show current selections as defaults, ask multi-select, then regenerate `.mcp.json` and `.claude/settings.json` exactly as `/project-initialiser:init-repo` step 6-7 describes.
 
-For secret changes: ask which secret, then either remove (`claude-secrets rm <NAME>`) or re-set following the same backend flow as `/init-repo` step 5.
+For secret changes: ask which secret, then either remove (`claude-secrets rm <NAME>`) or re-set following the same backend flow as `/project-initialiser:init-repo` step 5.
 
 For reset: confirm with the user, then `rm .claude/.project-initialiser.json .mcp.json` and clear `enabledMcpjsonServers`/`skillOverrides` from `.claude/settings.json`. Note: keychain entries are NOT removed automatically — tell the user how to remove them manually if they want.

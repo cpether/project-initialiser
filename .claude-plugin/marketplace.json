@@ -1,0 +1,13 @@
+{
+  "name": "project-initialiser",
+  "owner": {
+    "name": "cpether"
+  },
+  "plugins": [
+    {
+      "name": "project-initialiser",
+      "source": "./",
+      "description": "Per-repo MCP and skill selection with macOS Keychain or 1Password secret injection"
+    }
+  ]
+}

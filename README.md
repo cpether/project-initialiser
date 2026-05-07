@@ -25,21 +25,29 @@ Out of the box, Claude Code loads every user-scope MCP server and skill in every
 git clone https://github.com/cpether/project-initialiser ~/.claude/plugins/project-initialiser
 ```
 
-Then in Claude Code:
+Symlink the CLI so it's reachable from any shell:
 
-```
-/plugin
-```
-
-…and add the local path. Or, in `~/.claude/settings.json`:
-
-```json
-{
-  "plugins": ["~/.claude/plugins/project-initialiser"]
-}
+```sh
+mkdir -p ~/.local/bin
+ln -s ~/.claude/plugins/project-initialiser/bin/claude-secrets ~/.local/bin/claude-secrets
 ```
 
-(Adjust to whatever plugin install mechanism your Claude Code version supports.)
+(Make sure `~/.local/bin` is on your `PATH`.)
+
+Then add the plugin to Claude Code. The repo ships with a `marketplace.json`, so:
+
+```
+/plugin marketplace add ~/.claude/plugins/project-initialiser
+/plugin install project-initialiser@project-initialiser
+```
+
+For development (auto-reload on file changes), launch Claude Code with:
+
+```sh
+claude --plugin-dir ~/.claude/plugins/project-initialiser
+```
+
+For 1Password support, install the [1Password CLI](https://developer.1password.com/docs/cli/get-started/) and sign in (`op signin`). Keychain works out of the box on macOS.
 
 For 1Password support, install the [1Password CLI](https://developer.1password.com/docs/cli/get-started/) and sign in (`op signin`). Keychain works out of the box on macOS.
 
@@ -48,19 +56,19 @@ For 1Password support, install the [1Password CLI](https://developer.1password.c
 In any git repo:
 
 ```
-/init-repo
+/project-initialiser:init-repo
 ```
 
 Walks you through MCP/skill selection and secret setup. After it finishes, restart Claude Code in that repo — the new `.mcp.json` takes effect on the next session.
 
 ```
-/manage-repo
+/project-initialiser:manage-repo
 ```
 
 Edit your existing selections or rotate a secret.
 
 ```
-/add-secret GITHUB_TOKEN
+/project-initialiser:add-secret GITHUB_TOKEN
 ```
 
 Add a single secret without re-running the full wizard.

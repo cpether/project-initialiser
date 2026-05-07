@@ -19,7 +19,7 @@ cat <<'JSON'
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "This repository has not been initialised by project-initialiser. If the user wants to enable specific MCP servers, skills, and configure secrets for this repo, suggest they run the /init-repo slash command. Do not run it without being asked."
+    "additionalContext": "This repository has not been initialised by project-initialiser. If the user wants to enable specific MCP servers, skills, and configure secrets for this repo, suggest they run the /project-initialiser:init-repo slash command. Do not run it without being asked."
   }
 }
 JSON

@@ -36,4 +36,4 @@ ${CLAUDE_PLUGIN_ROOT}/bin/claude-secrets set <NAME> --backend op --ref <op://...
 
 Run `${CLAUDE_PLUGIN_ROOT}/bin/claude-secrets list` and show the user the updated list.
 
-Remind them that they'll need to add `<NAME>` to the relevant MCP's `args` in `.mcp.json` if it's not already there — or run `/manage-repo` to regenerate.
+Remind them that they'll need to add `<NAME>` to the relevant MCP's `args` in `.mcp.json` if it's not already there — or run `/project-initialiser:manage-repo` to regenerate.
