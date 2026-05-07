@@ -56,9 +56,8 @@ async function cmdInit() {
 
 async function cmdCheck() {
   const { root } = ctx();
-  const manifestPath = path.join(root, '.claude', '.project-initialiser.json');
   const skipMarker = path.join(root, SKIP_MARKER);
-  if (fs.existsSync(manifestPath) || fs.existsSync(skipMarker)) process.exit(0);
+  if (fs.existsSync(manifest.manifestPath(root)) || fs.existsSync(skipMarker)) process.exit(0);
   const choice = await picker.select({
     message: `No claude-init setup for ${root}. Configure now?`,
     choices: [

@@ -15,9 +15,9 @@ Out of the box, Claude Code loads every user-scope MCP server, every installed p
 ## Install
 
 ```sh
-git clone https://github.com/cpether/project-initialiser ~/code/claude-init
+git clone https://github.com/cpether/claude-init ~/projects/claude-init
 mkdir -p ~/.local/bin
-ln -s ~/code/claude-init/bin/claude-init ~/.local/bin/claude-init
+ln -s ~/projects/claude-init/bin/claude-init ~/.local/bin/claude-init
 ```
 
 `~/.local/bin` is the per-user convention used by `pipx`, `uv`, `cargo`, and friends. If it's not already on your `PATH`, add this to your shell rc:
@@ -74,7 +74,7 @@ claude-init exec <NAME>... -- <cmd> [args]        # used inside generated .mcp.j
 - **`~/.claude.json` → projects[<repo>].disabledMcpServers** — per-repo disable list for claude.ai connectors and any other named MCP.
 - **`~/.claude.json` → projects[<repo>].mcpServers** — for `mcp add --scope local`.
 - **`~/.claude.json` → mcpServers** — for `mcp add --scope user`.
-- **`.claude/.project-initialiser.json`** — manifest of selected MCPs/skills + per-repo secret references (no values). Gitignored automatically when in a git repo.
+- **`.claude/.claude-init.json`** — manifest of selected MCPs/skills + per-repo secret references (no values). Gitignored automatically when in a git repo.
 - **`~/.claude/claude-init/manifest.json`** — user-scope secret references (shared defaults).
 
 ## Adding a new MCP
@@ -105,7 +105,7 @@ Wrapped entries (those using `claude-init exec`) have their command path adjuste
 
 When `claude-init exec` runs, it resolves each requested name in order:
 
-1. Project manifest (`.claude/.project-initialiser.json` in the repo).
+1. Project manifest (`.claude/.claude-init.json` in the repo).
 2. User manifest (`~/.claude/claude-init/manifest.json`).
 3. Error.
 
@@ -136,7 +136,7 @@ So you can set `GITHUB_TOKEN` once at user scope, override it in a specific repo
 
 ## Manifest format
 
-`.claude/.project-initialiser.json` (per-repo):
+`.claude/.claude-init.json` (per-repo):
 
 ```json
 {
