@@ -1,0 +1,318 @@
+#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+const { spawnSync } = require('child_process');
+
+const libDir = path.resolve(__dirname, '..', 'lib');
+const manifest = require(path.join(libDir, 'manifest'));
+const userManifest = require(path.join(libDir, 'user-manifest'));
+const discover = require(path.join(libDir, 'discover'));
+const projectState = require(path.join(libDir, 'project-state'));
+const picker = require(path.join(libDir, 'picker'));
+const wizard = require(path.join(libDir, 'wizard'));
+const mcpAdd = require(path.join(libDir, 'mcp-add'));
+const scopeMove = require(path.join(libDir, 'scope-move'));
+const secretsResolve = require(path.join(libDir, 'secrets-resolve'));
+const backends = {
+  keychain: require(path.join(libDir, 'backends', 'keychain')),
+  op: require(path.join(libDir, 'backends', 'op')),
+};
+
+const SKIP_MARKER = '.claude/.claude-init-skip';
+
+function die(msg, code = 1) {
+  process.stderr.write(`claude-init: ${msg}\n`);
+  process.exit(code);
+}
+
+function bold(s) { return `\x1b[1m${s}\x1b[22m`; }
+function dim(s) { return `\x1b[2m${s}\x1b[22m`; }
+function green(s) { return `\x1b[32m${s}\x1b[39m`; }
+
+function parseArgs(argv) {
+  const args = { _: [], flags: {} };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') { args._.push(...argv.slice(i + 1)); break; }
+    if (a.startsWith('--')) {
+      const [k, v] = a.slice(2).split('=');
+      if (v !== undefined) args.flags[k] = v;
+      else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) { args.flags[k] = argv[++i]; }
+      else args.flags[k] = true;
+    } else args._.push(a);
+  }
+  return args;
+}
+
+function findRoot() { return manifest.findRepoRoot(); }
+function isGitRepo(root) { return fs.existsSync(path.join(root, '.git')); }
+function ctx() { const root = findRoot(); return { root, isGit: isGitRepo(root) }; }
+
+async function cmdInit() {
+  return wizard.runInit(ctx());
+}
+
+async function cmdCheck() {
+  const { root } = ctx();
+  const manifestPath = path.join(root, '.claude', '.project-initialiser.json');
+  const skipMarker = path.join(root, SKIP_MARKER);
+  if (fs.existsSync(manifestPath) || fs.existsSync(skipMarker)) process.exit(0);
+  const choice = await picker.select({
+    message: `No claude-init setup for ${root}. Configure now?`,
+    choices: [
+      { name: 'Yes, run the wizard', value: 'init' },
+      { name: 'Not now (ask again next time)', value: 'skip' },
+      { name: 'Never for this directory', value: 'never' },
+    ],
+  }).catch(() => 'skip');
+  if (choice === 'never') {
+    fs.mkdirSync(path.dirname(skipMarker), { recursive: true });
+    fs.writeFileSync(skipMarker, '');
+    console.log(dim('Skip marker written. Delete .claude/.claude-init-skip to re-enable.'));
+    process.exit(0);
+  }
+  if (choice === 'init') return cmdInit();
+  process.exit(0);
+}
+
+async function cmdMcp(args) {
+  const sub = args._[1];
+  if (sub === 'add') return mcpAdd.runAdd(ctx());
+  if (sub === 'move') return cmdMcpMove(args);
+  if (sub === 'enable' || sub === 'disable') {
+    const name = args._[2];
+    if (!name) die(`usage: claude-init mcp ${sub} <name>`);
+    const { root } = ctx();
+    const all = discover.discoverMcps(root).map((m) => m.name);
+    const state = projectState.getProjectState(root);
+    const currentDisabled = new Set(state.disabledMcpServers || []);
+    if (sub === 'disable') currentDisabled.add(name);
+    else currentDisabled.delete(name);
+    projectState.setDisabledMcps(root, all, [...currentDisabled]);
+    console.log(green(`mcp ${name}: ${sub}d for this repo`));
+    return;
+  }
+  die('usage: claude-init mcp <add|move|enable|disable> [args]');
+}
+
+const SCOPE_LABELS = {
+  user: 'User (~/.claude.json mcpServers — available everywhere)',
+  project: 'Project (.mcp.json — committable, shared with team)',
+  local: 'Local (~/.claude.json projects[<root>] — this repo only)',
+};
+
+async function cmdMcpMove(args) {
+  const { root } = ctx();
+  let name = args._[2];
+  let to = args.flags.to;
+
+  if (!name) {
+    const all = scopeMove.listAllByScope(root);
+    if (all.length === 0) die('no MCPs in any scope to move');
+    const picked = await picker.select({
+      message: 'Which MCP to move?',
+      choices: all.map((e) => ({
+        name: `${e.name}  ${dim('[' + e.scope + ']')}`,
+        value: `${e.scope}|${e.name}`,
+      })),
+    });
+    name = picked.split('|')[1];
+  }
+
+  const located = scopeMove.locateEntry(root, name);
+  if (!located) die(`MCP "${name}" not found in any scope for ${root}`);
+
+  if (!to) {
+    const others = ['user', 'project', 'local'].filter((s) => s !== located.scope);
+    to = await picker.select({
+      message: `Move "${name}" from ${bold(located.scope)} to:`,
+      choices: others.map((s) => ({ name: SCOPE_LABELS[s], value: s })),
+    });
+  }
+
+  try {
+    const result = scopeMove.move(root, name, to);
+    console.log(green(`moved ${name}: ${result.from} → ${result.to}`));
+    if (to === 'project' && located.scope !== 'project') {
+      const isGit = isGitRepo(root);
+      console.log(dim(isGit
+        ? '  (committable; teammates need claude-init on PATH if it uses claude-init exec)'
+        : '  (not a git repo — committability moot here)'));
+    }
+  } catch (err) {
+    die(err.message);
+  }
+}
+
+async function cmdPlugin(args) {
+  const sub = args._[1];
+  const id = args._[2];
+  if (!sub || !id) die('usage: claude-init plugin <enable|disable|unset> <plugin@marketplace>');
+  if (!['enable', 'disable', 'unset'].includes(sub)) die(`unknown plugin action: ${sub}`);
+  const { root } = ctx();
+  projectState.setPluginState(root, id, sub);
+  console.log(green(`plugin ${id}: ${sub}`));
+}
+
+async function cmdDiscover() {
+  process.stdout.write(JSON.stringify({ mcps: discover.discoverMcps(ctx().root), skills: discover.discoverSkills() }, null, 2) + '\n');
+}
+
+async function cmdState() {
+  const { root } = ctx();
+  process.stdout.write(JSON.stringify(projectState.getProjectState(root), null, 2) + '\n');
+}
+
+async function cmdSecret(args) {
+  const sub = args._[1];
+  const name = args._[2];
+  const scope = args.flags.scope || 'project';
+  if (!['user', 'project'].includes(scope)) die(`--scope must be user or project (got: ${scope})`);
+  const { root } = ctx();
+
+  if (sub === 'list') {
+    const all = secretsResolve.listAll(root);
+    if (all.length === 0) { console.log('(no secrets)'); return; }
+    for (const s of all) {
+      const where = s.overridden ? `${s.effective}, overrides user` : s.effective;
+      const ref = s[s.effective];
+      const detail = ref.backend === 'keychain'
+        ? `keychain (${ref.service}${ref.isolated ? ', isolated' : ''})`
+        : `1password (${ref.ref})`;
+      console.log(`${s.name}\t[${where}]\t${detail}`);
+    }
+    return;
+  }
+  if (!name) die(`usage: claude-init secret ${sub} <NAME> [--scope user|project]`);
+
+  if (sub === 'set') {
+    const backend = args.flags.backend || 'keychain';
+    if (!backends[backend]) die(`unknown backend: ${backend}`);
+    let ref;
+    const isolated = !!args.flags.isolate;
+    if (backend === 'keychain') {
+      const value = args.flags.value && args.flags.value !== true
+        ? String(args.flags.value)
+        : await picker.password({ message: `Value for ${name}:` });
+      if (!value) die('empty value');
+      ref = backends.keychain.set({ name, value, isolated, repoHash: manifest.repoHash(root) });
+    } else {
+      const opRef = args.flags.ref && args.flags.ref !== true
+        ? String(args.flags.ref)
+        : await picker.input({ message: `op:// reference for ${name}:`, validate: (v) => v.startsWith('op://') || 'must start with op://' });
+      ref = backends.op.set({ name, opRef });
+    }
+    const entry = { ...ref, isolated: isolated || undefined };
+    if (scope === 'project') {
+      const data = manifest.read(root) || { version: 1, mcps: [], skills: [], secrets: {} };
+      data.secrets = data.secrets || {};
+      data.secrets[name] = entry;
+      manifest.write(root, data);
+    } else {
+      const data = userManifest.load();
+      data.secrets = data.secrets || {};
+      data.secrets[name] = entry;
+      userManifest.write(data);
+    }
+    console.log(green(`stored ${name} (${scope}, ${backend}${isolated ? ', isolated' : ''})`));
+    return;
+  }
+  if (sub === 'get') {
+    const r = secretsResolve.resolve(root, name);
+    if (!r) die(`no secret ${name} (project or user)`);
+    process.stdout.write(backends[r.ref.backend].get({ ref: r.ref }));
+    return;
+  }
+  if (sub === 'rm') {
+    if (scope === 'project') {
+      const data = manifest.read(root);
+      if (!data || !data.secrets || !data.secrets[name]) die(`no project secret ${name}`);
+      backends[data.secrets[name].backend].rm({ ref: data.secrets[name] });
+      delete data.secrets[name];
+      manifest.write(root, data);
+    } else {
+      const data = userManifest.load();
+      if (!data.secrets || !data.secrets[name]) die(`no user secret ${name}`);
+      backends[data.secrets[name].backend].rm({ ref: data.secrets[name] });
+      delete data.secrets[name];
+      userManifest.write(data);
+    }
+    console.log(`removed ${name} (${scope})`);
+    return;
+  }
+  die(`unknown secret subcommand: ${sub}`);
+}
+
+async function cmdExec() {
+  const dashIdx = process.argv.indexOf('--');
+  if (dashIdx < 0) die('usage: claude-init exec <NAME>... -- <command> [args...]');
+  const names = process.argv.slice(3, dashIdx);
+  const cmd = process.argv.slice(dashIdx + 1);
+  if (cmd.length === 0) die('no command after --');
+  const { root } = ctx();
+  const env = { ...process.env };
+  for (const name of names) {
+    const r = secretsResolve.resolve(root, name);
+    if (!r) die(`secret ${name} not found (project or user). Run: claude-init secret set ${name}`);
+    try { env[name] = backends[r.ref.backend].get({ ref: r.ref }); }
+    catch (err) { die(`failed to read ${name}: ${err.message}`); }
+  }
+  const r = spawnSync(cmd[0], cmd.slice(1), { stdio: 'inherit', env });
+  process.exit(r.status ?? 1);
+}
+
+function helpText() {
+  return `${bold('claude-init')} — per-project Claude Code setup
+
+Usage:
+  claude-init init                                  interactive setup wizard
+  claude-init check                                 first-run gate (use in 'cc' wrapper)
+  claude-init mcp add                               interactively add a new MCP server
+  claude-init mcp move [<name>] [--to user|project|local]   change an MCP's scope
+  claude-init mcp enable <name>                     enable an MCP in this repo
+  claude-init mcp disable <name>                    disable an MCP in this repo
+  claude-init plugin enable <id@market>             force-enable a plugin in this repo
+  claude-init plugin disable <id@market>            disable a plugin in this repo
+  claude-init plugin unset <id@market>              clear per-repo plugin override
+  claude-init secret list                           list secrets (project + user)
+  claude-init secret set <NAME> [--scope user|project] [--backend keychain|op]
+                  [--ref op://...] [--isolate] [--value VAL]
+  claude-init secret get <NAME>                     resolve project, then user
+  claude-init secret rm <NAME>  [--scope user|project]
+  claude-init discover                              JSON dump of MCPs/skills
+  claude-init state                                 JSON dump of per-repo overrides
+  claude-init exec <NAME>... -- <cmd> [args]        run cmd with secrets in env
+                                                    (used inside generated .mcp.json)
+
+Suggested 'cc' wrapper for your shell:
+
+  cc() {
+    claude-init check || return
+    claude "$@"
+  }
+`;
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const sub = argv[0];
+  const args = parseArgs(argv);
+  switch (sub) {
+    case 'init': return cmdInit(args);
+    case 'check': return cmdCheck();
+    case 'mcp': return cmdMcp(args);
+    case 'plugin': return cmdPlugin(args);
+    case 'discover': return cmdDiscover();
+    case 'state': return cmdState();
+    case 'secret': return cmdSecret(args);
+    case 'exec': return cmdExec();
+    case '--help':
+    case '-h':
+    case undefined:
+      process.stdout.write(helpText());
+      return;
+    default: die(`unknown subcommand: ${sub}`);
+  }
+}
+
+main().catch((err) => die(err.message || String(err)));
