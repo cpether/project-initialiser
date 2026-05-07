@@ -1,0 +1,10 @@
+{
+  "name": "project-initialiser",
+  "version": "0.1.0",
+  "description": "Per-repo MCP and skill selection with macOS Keychain / 1Password secret injection",
+  "author": {
+    "name": "cpether"
+  },
+  "homepage": "https://github.com/cpether/project-initialiser",
+  "license": "MIT"
+}
