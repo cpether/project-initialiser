@@ -101,6 +101,8 @@ claude-init mcp wrap <name>
 
 Rewrites an existing user, project, or local MCP in place to run through `claude-init exec` when it has `${SECRET}` env references. This keeps the MCP in its current scope and only changes how its secrets are injected.
 
+The `init` wizard also offers this migration when it discovers existing user, project, or local MCPs with `${SECRET}` env references.
+
 ## Secret resolution
 
 When `claude-init exec` runs, it resolves each requested name in order:

@@ -80,6 +80,47 @@ async function testUserMcpsStayUserScoped() {
   assert.deepStrictEqual(readJson(path.join(home, '.claude.json')).projects[repo].disabledMcpServers, undefined);
 }
 
+async function testInitWrapsUserMcpInPlace() {
+  const repo = makeRepo('user-wrap-in-place');
+  writeJson(path.join(repo, '.claude', '.claude-init.json'), {
+    version: 1,
+    mcps: [],
+    skills: [],
+    secrets: {
+      TOKEN: { backend: 'op', ref: 'op://Test/Token/credential' },
+    },
+  });
+  setClaudeJson({
+    mcpServers: {
+      user_secret_mcp: {
+        type: 'stdio',
+        command: 'node',
+        args: ['server.js'],
+        env: { TOKEN: '${TOKEN}' },
+      },
+    },
+  });
+
+  mockPicker({
+    checkbox: async ({ message }) => {
+      if (message.startsWith('User-scope MCPs')) return ['user_secret_mcp'];
+      if (message.startsWith('Migrate user entries')) return ['user_secret_mcp'];
+      return [];
+    },
+    select: async ({ choices }) => {
+      const useExisting = choices.find((choice) => choice.value === 'use');
+      return (useExisting || choices[0]).value;
+    },
+  });
+
+  await wizard.runInit({ root: repo, isGit: true });
+  assert.strictEqual(fs.existsSync(path.join(repo, '.mcp.json')), false);
+  const userMcp = readJson(path.join(home, '.claude.json')).mcpServers.user_secret_mcp;
+  assert.match(userMcp.command, /claude-init$/);
+  assert.deepStrictEqual(userMcp.args, ['exec', 'TOKEN', '--', 'node', 'server.js']);
+  assert.deepStrictEqual(userMcp.env, {});
+}
+
 async function testProjectMcpStateIsReplaced() {
   const repo = makeRepo('project-state');
   setClaudeJson({});
@@ -140,6 +181,57 @@ async function testSkippedSecretLeavesProjectMcpUnchanged() {
   });
   await wizard.runInit({ root: repo, isGit: true });
   assert.deepStrictEqual(readJson(path.join(repo, '.mcp.json')), original);
+}
+
+async function testInitMigratesProjectDollarEnvReference() {
+  const repo = makeRepo('project-dollar-env');
+  writeJson(path.join(repo, '.claude', '.claude-init.json'), {
+    version: 1,
+    mcps: [],
+    skills: [],
+    secrets: {
+      GRAFANA_SERVICE_ACCOUNT_TOKEN: { backend: 'op', ref: 'op://Test/Grafana/credential' },
+    },
+  });
+  setClaudeJson({});
+  writeJson(path.join(repo, '.mcp.json'), {
+    mcpServers: {
+      grafana: {
+        command: 'uvx',
+        args: ['mcp-grafana'],
+        env: {
+          GRAFANA_URL: 'https://adaptavist.grafana.net',
+          GRAFANA_SERVICE_ACCOUNT_TOKEN: '$GRAFANA_SERVICE_ACCOUNT_TOKEN',
+        },
+      },
+    },
+  });
+
+  mockPicker({
+    checkbox: async ({ message }) => {
+      if (message.startsWith('Project-scope MCPs')) return ['grafana'];
+      if (message.startsWith('Migrate project entries')) return ['grafana'];
+      return [];
+    },
+    select: async ({ choices }) => {
+      const useExisting = choices.find((choice) => choice.value === 'use');
+      return (useExisting || choices[0]).value;
+    },
+  });
+
+  await wizard.runInit({ root: repo, isGit: true });
+  const migrated = readJson(path.join(repo, '.mcp.json')).mcpServers.grafana;
+  assert.strictEqual(migrated.command, 'claude-init');
+  assert.deepStrictEqual(migrated.args, [
+    'exec',
+    'GRAFANA_SERVICE_ACCOUNT_TOKEN',
+    '--',
+    'uvx',
+    'mcp-grafana',
+  ]);
+  assert.deepStrictEqual(migrated.env, {
+    GRAFANA_URL: 'https://adaptavist.grafana.net',
+  });
 }
 
 function testProjectMcpEnableDisableCliUsesSettingsJson() {
@@ -223,8 +315,10 @@ function testInvalidJsonIsNotOverwritten() {
 
 (async () => {
   await testUserMcpsStayUserScoped();
+  await testInitWrapsUserMcpInPlace();
   await testProjectMcpStateIsReplaced();
   await testSkippedSecretLeavesProjectMcpUnchanged();
+  await testInitMigratesProjectDollarEnvReference();
   testProjectMcpEnableDisableCliUsesSettingsJson();
   await testCopiedUserShimCleanup();
   testInvalidJsonIsNotOverwritten();
