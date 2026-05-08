@@ -11,6 +11,7 @@ const projectState = require(path.join(libDir, 'project-state'));
 const picker = require(path.join(libDir, 'picker'));
 const wizard = require(path.join(libDir, 'wizard'));
 const mcpAdd = require(path.join(libDir, 'mcp-add'));
+const mcpWrap = require(path.join(libDir, 'mcp-wrap'));
 const scopeMove = require(path.join(libDir, 'scope-move'));
 const migrate = require(path.join(libDir, 'migrate'));
 const secretsResolve = require(path.join(libDir, 'secrets-resolve'));
@@ -46,6 +47,10 @@ function parseArgs(argv) {
   return args;
 }
 
+function wantsHelp(args) {
+  return args.flags.help || args._.includes('help') || args._.includes('-h') || args._.includes('--help');
+}
+
 function findRoot() { return manifest.findRepoRoot(); }
 function isGitRepo(root) { return fs.existsSync(path.join(root, '.git')); }
 function ctx() { const root = findRoot(); return { root, isGit: isGitRepo(root) }; }
@@ -78,23 +83,45 @@ async function cmdCheck() {
 
 async function cmdMcp(args) {
   const sub = args._[1];
+  if (!sub || wantsHelp(args)) {
+    process.stdout.write(mcpHelpText());
+    return;
+  }
   if (sub === 'add') return mcpAdd.runAdd(ctx());
+  if (sub === 'wrap') {
+    const name = args._[2];
+    if (!name) die('usage: claude-init mcp wrap <name>');
+    const result = await mcpWrap.runWrap(ctx(), name);
+    if (result.status === 'already-wrapped') {
+      console.log(dim(`${name} is already wrapped at ${result.scope} scope`));
+    } else if (result.status === 'skipped') {
+      console.log(dim(`Skipped ${name}; ${result.skippedSecret} was not configured.`));
+    } else {
+      console.log(green(`wrapped ${name} at ${result.scope} scope`));
+      if (result.argvWarnings && result.argvWarnings.length) {
+        console.log(yellow(`warning: argv references remain: ${result.argvWarnings.map((v) => '${' + v + '}').join(', ')}`));
+      }
+    }
+    return;
+  }
   if (sub === 'move') return cmdMcpMove(args);
   if (sub === 'remap') return cmdMcpRemap(args);
   if (sub === 'enable' || sub === 'disable') {
     const name = args._[2];
     if (!name) die(`usage: claude-init mcp ${sub} <name>`);
     const { root } = ctx();
-    const all = discover.discoverMcps(root).map((m) => m.name);
-    const state = projectState.getProjectState(root);
-    const currentDisabled = new Set(state.disabledMcpServers || []);
-    if (sub === 'disable') currentDisabled.add(name);
-    else currentDisabled.delete(name);
-    projectState.setDisabledMcps(root, all, [...currentDisabled]);
+    const located = scopeMove.locateEntry(root, name);
+    if (located && located.scope === 'project') {
+      projectState.setProjectMcpjsonServer(root, name, sub === 'enable');
+    } else {
+      const known = located || discover.discoverMcps(root).some((m) => m.name === name);
+      if (!known) die(`MCP "${name}" not found for ${root}`);
+      projectState.setDisabledMcps(root, [name], sub === 'disable' ? [name] : []);
+    }
     console.log(green(`mcp ${name}: ${sub}d for this repo`));
     return;
   }
-  die('usage: claude-init mcp <add|move|remap|enable|disable> [args]');
+  die('usage: claude-init mcp <add|wrap|move|remap|enable|disable> [args]');
 }
 
 async function cmdMcpRemap(args) {
@@ -247,6 +274,10 @@ async function cmdMcpMove(args) {
 async function cmdPlugin(args) {
   const sub = args._[1];
   const id = args._[2];
+  if (!sub || wantsHelp(args)) {
+    process.stdout.write(pluginHelpText());
+    return;
+  }
   if (!sub || !id) die('usage: claude-init plugin <enable|disable|unset> <plugin@marketplace>');
   if (!['enable', 'disable', 'unset'].includes(sub)) die(`unknown plugin action: ${sub}`);
   const { root } = ctx();
@@ -267,6 +298,10 @@ async function cmdSecret(args) {
   const sub = args._[1];
   const name = args._[2];
   const scope = args.flags.scope || 'project';
+  if (!sub || wantsHelp(args)) {
+    process.stdout.write(secretHelpText());
+    return;
+  }
   if (!['user', 'project'].includes(scope)) die(`--scope must be user or project (got: ${scope})`);
   const { root } = ctx();
 
@@ -374,32 +409,95 @@ function helpText() {
   return `${bold('claude-init')} — per-project Claude Code setup
 
 Usage:
-  claude-init init                                  interactive setup wizard
-  claude-init check                                 first-run gate (use in 'cc' wrapper)
-  claude-init mcp add                               interactively add a new MCP server
-  claude-init mcp move [<name>] [--to user|project|local]   change an MCP's scope
-  claude-init mcp remap [<name>]                    point an env key at a different secret name
-  claude-init mcp enable <name>                     enable an MCP in this repo
-  claude-init mcp disable <name>                    disable an MCP in this repo
-  claude-init plugin enable <id@market>             force-enable a plugin in this repo
-  claude-init plugin disable <id@market>            disable a plugin in this repo
-  claude-init plugin unset <id@market>              clear per-repo plugin override
-  claude-init secret list                           list secrets (project + user)
-  claude-init secret set <NAME> [--scope user|project] [--backend keychain|op]
-                  [--ref op://...] [--isolate] [--value VAL]
-  claude-init secret get <NAME>                     resolve project, then user
-  claude-init secret rm <NAME>  [--scope user|project]
-  claude-init discover                              JSON dump of MCPs/skills
-  claude-init state                                 JSON dump of per-repo overrides
-  claude-init exec <NAME>... -- <cmd> [args]        run cmd with secrets in env
-                                                    (used inside generated .mcp.json)
+  claude-init init          configure this repo
+  claude-init check         first-run gate for a claude wrapper
+  claude-init mcp ...       add, wrap, move, enable, or disable MCPs
+  claude-init secret ...    list, set, get, or remove secrets
+  claude-init plugin ...    enable or disable plugins per repo
+  claude-init discover      print discovered MCPs and skills as JSON
+  claude-init state         print this repo's override state as JSON
 
-Suggested 'cc' wrapper for your shell:
+More help:
+  claude-init help mcp
+  claude-init help secret
+  claude-init help plugin
+  claude-init help wrapper
+`;
+}
+
+function mcpHelpText() {
+  return `${bold('claude-init mcp')} — manage MCP definitions and repo toggles
+
+Usage:
+  claude-init mcp add
+      Add a new MCP server interactively.
+
+  claude-init mcp wrap <name>
+      Wrap an existing MCP in place for secret injection.
+
+  claude-init mcp move [name] [--to user|project|local]
+      Move an MCP definition between scopes.
+
+  claude-init mcp remap [name]
+      Point a wrapped env key at a different secret name.
+
+  claude-init mcp enable <name>
+  claude-init mcp disable <name>
+      Toggle an MCP for this repo.
+
+Scopes:
+  user     ~/.claude.json mcpServers
+  project  .mcp.json
+  local    ~/.claude.json projects[repo].mcpServers
+`;
+}
+
+function secretHelpText() {
+  return `${bold('claude-init secret')} — manage secret references
+
+Usage:
+  claude-init secret list
+      Show configured project and user secrets.
+
+  claude-init secret set <NAME> [--scope user|project] [--backend keychain|op]
+      Store or update a secret reference.
+
+  claude-init secret get <NAME>
+      Print the resolved secret value. Project scope wins over user scope.
+
+  claude-init secret rm <NAME> [--scope user|project]
+      Remove a secret reference and backend entry where supported.
+
+Options for set:
+  --scope user|project      Default: project
+  --backend keychain|op     Default: keychain
+  --ref op://...            1Password reference
+  --isolate                 Use a repo-isolated Keychain service
+  --value VALUE             Non-interactive Keychain value
+`;
+}
+
+function pluginHelpText() {
+  return `${bold('claude-init plugin')} — repo-level plugin overrides
+
+Usage:
+  claude-init plugin enable <id@market>
+  claude-init plugin disable <id@market>
+  claude-init plugin unset <id@market>
+`;
+}
+
+function wrapperHelpText() {
+  return `${bold('claude-init check')} — suggested claude wrapper
+
+Add this to your shell rc if you alias Claude Code as cc:
 
   cc() {
     claude-init check || return
     claude "$@"
   }
+
+The check command exits 0 when this repo is configured, skipped, or you choose "not now".
 `;
 }
 
@@ -407,6 +505,15 @@ async function main() {
   const argv = process.argv.slice(2);
   const sub = argv[0];
   const args = parseArgs(argv);
+  if (sub === 'help') {
+    const topic = argv[1];
+    if (topic === 'mcp') process.stdout.write(mcpHelpText());
+    else if (topic === 'secret') process.stdout.write(secretHelpText());
+    else if (topic === 'plugin') process.stdout.write(pluginHelpText());
+    else if (topic === 'wrapper' || topic === 'check') process.stdout.write(wrapperHelpText());
+    else process.stdout.write(helpText());
+    return;
+  }
   switch (sub) {
     case 'init': return cmdInit(args);
     case 'check': return cmdCheck();

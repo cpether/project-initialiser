@@ -49,29 +49,21 @@ cc() {
 ## Usage
 
 ```sh
-claude-init init                                  # interactive wizard
-claude-init check                                 # first-run gate (above)
-claude-init mcp add                               # add a new MCP server (any scope)
-claude-init mcp move [name] [--to user|project|local]  # change an MCP's scope
-claude-init mcp enable <name>                     # toggle MCP on per-repo
-claude-init mcp disable <name>                    # toggle MCP off per-repo
-claude-init plugin enable <id@market>             # force-enable a plugin per-repo
-claude-init plugin disable <id@market>            # disable a plugin per-repo
-claude-init plugin unset <id@market>              # clear per-repo plugin override
-claude-init secret list                           # all secrets, with [user] / [project] tags
-claude-init secret set <NAME> [--scope user|project]
-claude-init secret get <NAME>                     # resolves project, then user
-claude-init secret rm <NAME> [--scope user|project]
-claude-init discover                              # JSON dump of MCPs/skills (debug)
-claude-init state                                 # JSON dump of per-repo overrides (debug)
-claude-init exec <NAME>... -- <cmd> [args]        # used inside generated .mcp.json
+claude-init init          # interactive wizard
+claude-init check         # first-run gate (above)
+claude-init mcp ...       # add, wrap, move, enable, or disable MCPs
+claude-init secret ...    # list, set, get, or remove secrets
+claude-init plugin ...    # enable or disable plugins per repo
+claude-init discover      # JSON dump of MCPs/skills (debug)
+claude-init state         # JSON dump of per-repo overrides (debug)
+claude-init help mcp      # detailed MCP commands
 ```
 
 ## What the wizard writes
 
-- **`.mcp.json`** at repo root — the user-scope MCPs you selected, with `command`/`args` rewritten to invoke the secrets helper. Committable; teammates need `claude-init` on PATH.
-- **`.claude/settings.json`** — `enabledMcpjsonServers` (auto-approve project MCPs) and `skillOverrides` (turn off skills you didn't pick).
-- **`~/.claude.json` → projects[<repo>].disabledMcpServers** — per-repo disable list for claude.ai connectors and any other named MCP.
+- **`.mcp.json`** at repo root — project-scope MCP definitions only. Committable; teammates need `claude-init` on PATH if a project MCP uses `claude-init exec`.
+- **`.claude/settings.json`** — project MCP enable/disable state, plugin overrides, and `skillOverrides` (turn off skills you didn't pick).
+- **`~/.claude.json` → projects[<repo>].disabledMcpServers** — per-repo disable list for user/local MCPs and claude.ai connectors.
 - **`~/.claude.json` → projects[<repo>].mcpServers** — for `mcp add --scope local`.
 - **`~/.claude.json` → mcpServers** — for `mcp add --scope user`.
 - **`.claude/.claude-init.json`** — manifest of selected MCPs/skills + per-repo secret references (no values). Gitignored automatically when in a git repo.
@@ -100,6 +92,14 @@ Common moves:
 - **Project → Local**: keep the same effect (this repo only) but uncommitted.
 
 Wrapped entries (those using `claude-init exec`) have their command path adjusted automatically: absolute path for user/local, PATH-based `claude-init` for project (so teammates' `.mcp.json` resolves through their own PATH).
+
+## Wrapping an existing MCP for secrets
+
+```sh
+claude-init mcp wrap <name>
+```
+
+Rewrites an existing user, project, or local MCP in place to run through `claude-init exec` when it has `${SECRET}` env references. This keeps the MCP in its current scope and only changes how its secrets are injected.
 
 ## Secret resolution
 
