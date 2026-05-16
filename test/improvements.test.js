@@ -513,6 +513,76 @@ async function testCheckLegacyManifestBootstrapsSilently() {
   assert.deepStrictEqual(updatedManifest.known.user, ['stuff']);
 }
 
+function testMcpMoveRefreshesKnown() {
+  const repo = makeRepo('move-refreshes-known');
+  setClaudeJson({
+    mcpServers: {},
+    projects: {
+      [repo]: {
+        mcpServers: {
+          floater: { type: 'stdio', command: 'node', args: ['f.js'], env: {} },
+        },
+      },
+    },
+  });
+  writeJson(manifestLib.manifestPath(repo), {
+    version: 1,
+    mcps: [],
+    skills: [],
+    secrets: {},
+    known: { user: [], plugin: [], local: ['floater'] },
+  });
+
+  const result = spawnSync(
+    process.execPath,
+    [path.join(repoRoot, 'bin', 'claude-init'), 'mcp', 'move', 'floater', '--to', 'user'],
+    { cwd: repo, env: { ...process.env, HOME: home }, encoding: 'utf8' },
+  );
+  assert.strictEqual(result.status, 0, result.stderr);
+
+  const updatedManifest = readJson(manifestLib.manifestPath(repo));
+  assert.deepStrictEqual(updatedManifest.known.user, ['floater'], 'user-scope known should include moved MCP');
+  assert.deepStrictEqual(updatedManifest.known.local, [], 'old scope entry should be cleaned up');
+}
+
+async function testCheckNoopAfterMove() {
+  const repo = makeRepo('check-noop-after-move');
+  setClaudeJson({
+    mcpServers: {},
+    projects: {
+      [repo]: {
+        mcpServers: {
+          mover: { type: 'stdio', command: 'node', args: ['m.js'], env: {} },
+        },
+      },
+    },
+  });
+  writeJson(manifestLib.manifestPath(repo), {
+    version: 1,
+    mcps: [],
+    skills: [],
+    secrets: {},
+    known: { user: [], plugin: [], local: ['mover'] },
+  });
+
+  const moveResult = spawnSync(
+    process.execPath,
+    [path.join(repoRoot, 'bin', 'claude-init'), 'mcp', 'move', 'mover', '--to', 'user'],
+    { cwd: repo, env: { ...process.env, HOME: home }, encoding: 'utf8' },
+  );
+  assert.strictEqual(moveResult.status, 0, moveResult.stderr);
+
+  let prompted = false;
+  mockPicker({
+    checkbox: async () => { prompted = true; return []; },
+    confirm: async () => { prompted = true; return true; },
+  });
+  const data = readJson(manifestLib.manifestPath(repo));
+  const detectResult = await detectNew.handleCheck(repo, data);
+  assert.strictEqual(detectResult.action, 'noop', 'a scope move should not re-trigger detection');
+  assert.strictEqual(prompted, false);
+}
+
 async function testCheckNoopWhenNothingNew() {
   const repo = makeRepo('check-noop');
   writeJson(manifestLib.manifestPath(repo), {
@@ -565,6 +635,8 @@ function testInvalidJsonIsNotOverwritten() {
   await testCheckLeavesEnabledNewMcpAlone();
   await testCheckDeferKeepsKnownStable();
   await testCheckLegacyManifestBootstrapsSilently();
+  testMcpMoveRefreshesKnown();
+  await testCheckNoopAfterMove();
   await testCheckNoopWhenNothingNew();
   testInvalidJsonIsNotOverwritten();
   console.log('improvements tests passed');

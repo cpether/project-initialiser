@@ -261,6 +261,7 @@ async function cmdMcpMove(args) {
       });
       if (!ok) { console.log(dim('No changes.')); return; }
       scopeMove.removeFromScope(root, located.scope, name);
+      detectNew.refreshKnown(root);
       console.log(green(`removed ${located.scope}-scope ${name}; kept the equivalent ${to} version`));
       return;
     }
@@ -269,6 +270,7 @@ async function cmdMcpMove(args) {
 
   try {
     const result = scopeMove.move(root, name, to);
+    detectNew.refreshKnown(root);
     console.log(green(`moved ${name}: ${result.from} → ${result.to}`));
     if (to === 'project' && located.scope !== 'project') {
       const isGit = isGitRepo(root);
