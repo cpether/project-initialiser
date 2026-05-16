@@ -13,6 +13,8 @@ process.env.HOME = home;
 const picker = require('../lib/picker');
 const wizard = require('../lib/wizard');
 const writers = require('../lib/writers');
+const detectNew = require('../lib/detect-new');
+const manifestLib = require('../lib/manifest');
 
 function writeJson(filePath, data) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -302,6 +304,239 @@ async function testCopiedUserShimCleanup() {
   assert.deepStrictEqual(userMcp.env, {});
 }
 
+async function testRunInitRecordsKnownSnapshot() {
+  const repo = makeRepo('known-snapshot');
+  setClaudeJson({
+    mcpServers: {
+      first_mcp: { type: 'stdio', command: 'node', args: ['a.js'], env: {} },
+      second_mcp: { type: 'stdio', command: 'node', args: ['b.js'], env: {} },
+    },
+  });
+  mockPicker({
+    checkbox: async ({ message }) => {
+      if (message.startsWith('User-scope MCPs')) return ['first_mcp'];
+      return [];
+    },
+  });
+  await wizard.runInit({ root: repo, isGit: true });
+  const data = readJson(manifestLib.manifestPath(repo));
+  assert.ok(data.known, 'expected manifest.known to be written');
+  assert.deepStrictEqual(data.known.user, ['first_mcp', 'second_mcp']);
+  assert.deepStrictEqual(data.known.plugin, []);
+  assert.deepStrictEqual(data.known.local, []);
+  assert.ok(!('claudeai' in data.known), 'claude.ai is excluded from detection');
+}
+
+function testDetectFlagsNewUserMcp() {
+  const repo = makeRepo('detect-user');
+  setClaudeJson({
+    mcpServers: {
+      old_mcp: { type: 'stdio', command: 'node', args: ['a.js'], env: {} },
+      new_mcp: { type: 'stdio', command: 'node', args: ['b.js'], env: {} },
+    },
+  });
+  const manifestData = {
+    version: 1,
+    mcps: ['old_mcp'],
+    skills: [],
+    secrets: {},
+    known: { user: ['old_mcp'], plugin: [], local: [] },
+  };
+  const result = detectNew.detect(repo, manifestData);
+  assert.strictEqual(result.isLegacy, false);
+  assert.strictEqual(result.hasAny, true);
+  assert.deepStrictEqual(result.newByScope.user, ['new_mcp']);
+  assert.deepStrictEqual(result.newByScope.plugin, []);
+}
+
+function testDetectQuietWhenNothingNew() {
+  const repo = makeRepo('detect-quiet');
+  setClaudeJson({
+    mcpServers: {
+      stable_mcp: { type: 'stdio', command: 'node', args: ['a.js'], env: {} },
+    },
+  });
+  const manifestData = {
+    version: 1,
+    mcps: ['stable_mcp'],
+    skills: [],
+    secrets: {},
+    known: { user: ['stable_mcp'], plugin: [], local: [] },
+  };
+  const result = detectNew.detect(repo, manifestData);
+  assert.strictEqual(result.hasAny, false);
+}
+
+function testDetectLegacyManifestBootstrap() {
+  const repo = makeRepo('detect-legacy');
+  setClaudeJson({
+    mcpServers: {
+      something: { type: 'stdio', command: 'node', args: ['a.js'], env: {} },
+    },
+  });
+  const manifestData = { version: 1, mcps: [], skills: [], secrets: {} };
+  const result = detectNew.detect(repo, manifestData);
+  assert.strictEqual(result.isLegacy, true);
+  assert.strictEqual(result.hasAny, false);
+  assert.deepStrictEqual(result.baseline.user, ['something']);
+}
+
+function testDetectFlagsNewLocalMcp() {
+  const repo = makeRepo('detect-local');
+  setClaudeJson({
+    mcpServers: {},
+    projects: {
+      [repo]: {
+        mcpServers: {
+          local_new: { type: 'stdio', command: 'node', args: ['l.js'], env: {} },
+        },
+      },
+    },
+  });
+  const manifestData = {
+    version: 1,
+    mcps: [], skills: [], secrets: {},
+    known: { user: [], plugin: [], local: [] },
+  };
+  const result = detectNew.detect(repo, manifestData);
+  assert.deepStrictEqual(result.newByScope.local, ['local_new']);
+}
+
+async function testCheckDisablesNewMcpWhenUnchecked() {
+  const repo = makeRepo('check-disable');
+  const initialManifest = {
+    version: 1,
+    mcps: ['old_mcp'],
+    skills: [],
+    secrets: {},
+    known: { user: ['old_mcp'], plugin: [], local: [] },
+  };
+  writeJson(manifestLib.manifestPath(repo), initialManifest);
+  setClaudeJson({
+    mcpServers: {
+      old_mcp: { type: 'stdio', command: 'node', args: ['a.js'], env: {} },
+      brand_new: { type: 'stdio', command: 'node', args: ['n.js'], env: {} },
+    },
+  });
+
+  mockPicker({
+    confirm: async () => true,
+    checkbox: async () => [],
+  });
+  const data = readJson(manifestLib.manifestPath(repo));
+  const result = await detectNew.handleCheck(repo, data);
+  assert.strictEqual(result.action, 'saved');
+  const updatedManifest = readJson(manifestLib.manifestPath(repo));
+  assert.deepStrictEqual(updatedManifest.known.user, ['brand_new', 'old_mcp']);
+  const projectEntry = readJson(path.join(home, '.claude.json')).projects[repo];
+  assert.deepStrictEqual(projectEntry.disabledMcpServers, ['brand_new']);
+}
+
+async function testCheckLeavesEnabledNewMcpAlone() {
+  const repo = makeRepo('check-enable');
+  writeJson(manifestLib.manifestPath(repo), {
+    version: 1,
+    mcps: ['old_mcp'],
+    skills: [],
+    secrets: {},
+    known: { user: ['old_mcp'], plugin: [], local: [] },
+  });
+  setClaudeJson({
+    mcpServers: {
+      old_mcp: { type: 'stdio', command: 'node', args: ['a.js'], env: {} },
+      brand_new: { type: 'stdio', command: 'node', args: ['n.js'], env: {} },
+    },
+  });
+
+  mockPicker({
+    confirm: async () => true,
+    checkbox: async ({ choices }) => choices.filter((c) => c.checked).map((c) => c.value),
+  });
+  const data = readJson(manifestLib.manifestPath(repo));
+  const result = await detectNew.handleCheck(repo, data);
+  assert.strictEqual(result.action, 'saved');
+  const updatedManifest = readJson(manifestLib.manifestPath(repo));
+  assert.deepStrictEqual(updatedManifest.known.user, ['brand_new', 'old_mcp']);
+  assert.ok(updatedManifest.mcps.includes('brand_new'), 'enabled user MCP should be added to manifest.mcps');
+  const projectEntry = readJson(path.join(home, '.claude.json')).projects || {};
+  const disabled = (projectEntry[repo] || {}).disabledMcpServers || [];
+  assert.deepStrictEqual(disabled, []);
+}
+
+async function testCheckDeferKeepsKnownStable() {
+  const repo = makeRepo('check-defer');
+  writeJson(manifestLib.manifestPath(repo), {
+    version: 1,
+    mcps: ['old_mcp'],
+    skills: [],
+    secrets: {},
+    known: { user: ['old_mcp'], plugin: [], local: [] },
+  });
+  setClaudeJson({
+    mcpServers: {
+      old_mcp: { type: 'stdio', command: 'node', args: ['a.js'], env: {} },
+      brand_new: { type: 'stdio', command: 'node', args: ['n.js'], env: {} },
+    },
+  });
+
+  mockPicker({
+    confirm: async () => false,
+    checkbox: async ({ choices }) => choices.filter((c) => c.checked).map((c) => c.value),
+  });
+  const data = readJson(manifestLib.manifestPath(repo));
+  const result = await detectNew.handleCheck(repo, data);
+  assert.strictEqual(result.action, 'deferred');
+  const updatedManifest = readJson(manifestLib.manifestPath(repo));
+  assert.deepStrictEqual(updatedManifest.known.user, ['old_mcp'], 'known must not change on defer');
+}
+
+async function testCheckLegacyManifestBootstrapsSilently() {
+  const repo = makeRepo('check-legacy');
+  writeJson(manifestLib.manifestPath(repo), {
+    version: 1,
+    mcps: [],
+    skills: [],
+    secrets: {},
+  });
+  setClaudeJson({
+    mcpServers: {
+      stuff: { type: 'stdio', command: 'node', args: ['x.js'], env: {} },
+    },
+  });
+
+  mockPicker();
+  const data = readJson(manifestLib.manifestPath(repo));
+  const result = await detectNew.handleCheck(repo, data);
+  assert.strictEqual(result.action, 'bootstrap');
+  const updatedManifest = readJson(manifestLib.manifestPath(repo));
+  assert.ok(updatedManifest.known, 'legacy manifest should be bootstrapped with known');
+  assert.deepStrictEqual(updatedManifest.known.user, ['stuff']);
+}
+
+async function testCheckNoopWhenNothingNew() {
+  const repo = makeRepo('check-noop');
+  writeJson(manifestLib.manifestPath(repo), {
+    version: 1,
+    mcps: ['x'],
+    skills: [],
+    secrets: {},
+    known: { user: ['x'], plugin: [], local: [] },
+  });
+  setClaudeJson({
+    mcpServers: { x: { type: 'stdio', command: 'node', args: ['x.js'], env: {} } },
+  });
+
+  let prompted = false;
+  mockPicker({
+    checkbox: async () => { prompted = true; return []; },
+    confirm: async () => { prompted = true; return true; },
+  });
+  const data = readJson(manifestLib.manifestPath(repo));
+  const result = await detectNew.handleCheck(repo, data);
+  assert.strictEqual(result.action, 'noop');
+  assert.strictEqual(prompted, false, 'should not prompt when nothing is new');
+}
+
 function testInvalidJsonIsNotOverwritten() {
   const repo = makeRepo('invalid-json');
   const target = path.join(repo, '.mcp.json');
@@ -321,6 +556,16 @@ function testInvalidJsonIsNotOverwritten() {
   await testInitMigratesProjectDollarEnvReference();
   testProjectMcpEnableDisableCliUsesSettingsJson();
   await testCopiedUserShimCleanup();
+  await testRunInitRecordsKnownSnapshot();
+  testDetectFlagsNewUserMcp();
+  testDetectQuietWhenNothingNew();
+  testDetectLegacyManifestBootstrap();
+  testDetectFlagsNewLocalMcp();
+  await testCheckDisablesNewMcpWhenUnchecked();
+  await testCheckLeavesEnabledNewMcpAlone();
+  await testCheckDeferKeepsKnownStable();
+  await testCheckLegacyManifestBootstrapsSilently();
+  await testCheckNoopWhenNothingNew();
   testInvalidJsonIsNotOverwritten();
   console.log('improvements tests passed');
 })().catch((err) => {
