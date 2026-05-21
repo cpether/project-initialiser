@@ -12,6 +12,7 @@ pnpm-debug.log*
 .claude/.claude-init.json
 .claude/.claude-init-skip
 .claude/settings.local.json
+.claude/settings.json
 
 # Test and temporary output
 coverage/
