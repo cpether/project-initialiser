@@ -8,6 +8,7 @@ const manifest = require(path.join(libDir, 'manifest'));
 const userManifest = require(path.join(libDir, 'user-manifest'));
 const discover = require(path.join(libDir, 'discover'));
 const projectState = require(path.join(libDir, 'project-state'));
+const detectNew = require(path.join(libDir, 'detect-new'));
 const picker = require(path.join(libDir, 'picker'));
 const wizard = require(path.join(libDir, 'wizard'));
 const mcpAdd = require(path.join(libDir, 'mcp-add'));
@@ -62,7 +63,16 @@ async function cmdInit() {
 async function cmdCheck() {
   const { root } = ctx();
   const skipMarker = path.join(root, SKIP_MARKER);
-  if (fs.existsSync(manifest.manifestPath(root)) || fs.existsSync(skipMarker)) process.exit(0);
+  if (fs.existsSync(skipMarker)) process.exit(0);
+
+  const manifestData = manifest.read(root);
+  if (manifestData) {
+    await detectNew.handleCheck(root, manifestData).catch((err) => {
+      console.error(dim(`claude-init: ${err.message || err}; will ask again next time.`));
+    });
+    process.exit(0);
+  }
+
   const choice = await picker.select({
     message: `No claude-init setup for ${root}. Configure now?`,
     choices: [
@@ -251,6 +261,7 @@ async function cmdMcpMove(args) {
       });
       if (!ok) { console.log(dim('No changes.')); return; }
       scopeMove.removeFromScope(root, located.scope, name);
+      detectNew.refreshKnown(root);
       console.log(green(`removed ${located.scope}-scope ${name}; kept the equivalent ${to} version`));
       return;
     }
@@ -259,6 +270,7 @@ async function cmdMcpMove(args) {
 
   try {
     const result = scopeMove.move(root, name, to);
+    detectNew.refreshKnown(root);
     console.log(green(`moved ${name}: ${result.from} → ${result.to}`));
     if (to === 'project' && located.scope !== 'project') {
       const isGit = isGitRepo(root);

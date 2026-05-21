@@ -46,6 +46,8 @@ cc() {
 
 `check` exits 0 in three cases: a manifest already exists, you've marked the dir to skip, or you said "not now". So `cc` flows straight into `claude` after.
 
+When a manifest already exists, `check` also looks for **new user-, plugin-, or local-scope MCPs** added since the last setup. If any show up, you're prompted once to enable or disable them per-repo (defer with "no" to be asked again next session). claude.ai connectors are excluded from this check to keep startup snappy — they'd require an HTTP probe.
+
 ## Usage
 
 ```sh
